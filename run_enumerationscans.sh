@@ -173,6 +173,9 @@ else
 	if [ $RUNLOW = "TRUE" ]
 	then
 		# Low hanging fruit 
+        cd ~/assessments/"$CLIENT"/"$TARGET"
+        mkdir low_hanging_fruit
+
 		echo "[*] Looking for low hanging fruit to help get started while other scans run...."
 		cat ip_addresses_alive.txt | parallel -j2 "nmap -vv -T4 -F -O -Pn -sV --script=ftp-anon --script=http-default-accounts {} -oA low_hanging_fruit_{} && echo '[+]     Completed NMAP Low Hanging Fruit: {}'" >/dev/null 2>&1
 	fi
