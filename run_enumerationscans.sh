@@ -33,9 +33,9 @@ do
             c)     CLIENT=$OPTARG;;
             C)     CLEAN=TRUE;;
             t)     TARGET=$OPTARG;;
-        S)     SCANS+=( "${OPTARG}" );;
+            S)     SCANS+=( "${OPTARG}" );;
             ?)     printf "Invalid option: -$OPTARG\n" $0
-                          exit 2;;
+                   exit 2;;
            esac
 done
 
@@ -83,41 +83,52 @@ then
     echo "|               nmap = FULL TCP & UDP NMAP Sweep (be patient)      |"
     echo "|                                                                  |"
     echo "|               Can be passed as multiple -S flags, or using the   |"
-    echo "|               format -S{dns,low,smb,snmp,smtp,nmap}              |"
+    echo "|               format -S{live,dns,low,smb,snmp,smtp,nmap}         |"
     echo -e "|         -s  Source IP address                                    |"
     echo -e "|$DIM         -C  (optional) Clean up previous scans                   $ENDC|"
     echo "--------------------------------------------------------------------"
     echo ""
 else
+    RUNLIVE=FALSE
+    RUNDNS=FALSE
+    RUNLOW=FALSE
+    RUNSMB=FALSE
+    RUNSNMP=FALSE
+    RUNSMTP=FALSE
+    RUNNMAP=FALSE
 
     if (( ${#SCANS} > 0 ))
     then
         for scan in "${SCANS[@]}"
         do
+            if [ $scan = "live" ] || [ $scan = "LIVE" ]
+            then
+                RUNLIVE=TRUE
+            fi
             if [ $scan = "dns" ] || [ $scan = "DNS" ]
             then
                 RUNDNS=TRUE
             fi
-                        if [ $scan = "low" ] || [ $scan = "LOW" ]
-                        then
-                                RUNLOW=TRUE
-                        fi
-                        if [ $scan = "smb" ] || [ $scan = "SMB" ]
-                        then
-                                RUNSMB=TRUE
-                        fi
-                        if [ $scan = "snmp" ] || [ $scan = "SNMP" ]
-                        then
-                                RUNSNMP=TRUE
-                        fi
-                        if [ $scan = "smtp" ] || [ $scan = "SMTP" ]
-                        then
-                                RUNSMTP=TRUE
-                        fi
-                        if [ $scan = "nmap" ] || [ $scan = "NMAP" ]
-                        then
-                                RUNNMAP=TRUE
-                        fi
+            if [ $scan = "low" ] || [ $scan = "LOW" ]
+            then
+                RUNLOW=TRUE
+            fi
+            if [ $scan = "smb" ] || [ $scan = "SMB" ]
+            then
+                RUNSMB=TRUE
+            fi
+            if [ $scan = "snmp" ] || [ $scan = "SNMP" ]
+            then
+                RUNSNMP=TRUE
+            fi
+            if [ $scan = "smtp" ] || [ $scan = "SMTP" ]
+            then
+                RUNSMTP=TRUE
+            fi
+            if [ $scan = "nmap" ] || [ $scan = "NMAP" ]
+            then
+                 RUNNMAP=TRUE
+            fi
         done
     fi
 
@@ -133,11 +144,14 @@ else
     mkdir -p ~/assessments/"$CLIENT"/"$TARGET"
     cd "$CLIENT"/"$TARGET"
 
-    # Scan for live hosts
-    echo $SOURCE > SOURCE
-    echo "[+] Scanning network for alive hosts...."
-    nmap -S $SOURCE -sn -n -oA nmap_hosts_alive $TARGET >/dev/null 2>&1
-    cat nmap_hosts_alive.gnmap | grep "Status: Up" | cut -d" " -f2 > ip_addresses_alive.txt
+    if [ $RUNLIVE = "TRUE" ]
+    then
+        # Scan for live hosts
+        echo $SOURCE > SOURCE
+        echo "[+] Scanning network for alive hosts...."
+        nmap -S $SOURCE -sn -n -oA nmap_hosts_alive $TARGET >/dev/null 2>&1
+        cat nmap_hosts_alive.gnmap | grep "Status: Up" | cut -d" " -f2 > ip_addresses_alive.txt
+    fi
 
     # Count total hosts
     HOSTCOUNT=$(wc -l ip_addresses_alive.txt)
@@ -173,6 +187,7 @@ else
             fierce -threads 8 -dns $ZONE -file dns_scans/"$ZONE"_fierce_brute_dns_lookup.txt >/dev/null 2>&1 &
         fi
         # Backup just in case the transfer doesn't work, or isn't selected - host names are important after all!
+        echo "[+] Extracting hostnames (backup) - $ZONE"
         for host in $(cat ip_addresses_alive.txt); do for ns in $(cat dns_scans/nmap_possible_dns.gnmap | grep "open" | cut -d" " -f2); do host $host $ns | grep "pointer" | cut -d" " -f1,5 >> tmp.hostnames; done; done; cat tmp.hostnames | sort -u > dns_scans/"$ZONE"_hostnames; rm tmp.hostnames
     fi
 
@@ -183,7 +198,7 @@ else
         mkdir low_hanging_fruit
 
         echo "[*] Looking for low hanging fruit (anon-ftp,default accounts,backdoors) to help get started while other scans run...."
-        cat ip_addresses_alive.txt | parallel -j2 "nmap -vv -T4 -F -O -Pn -sV --script=ftp-anon,ftp-bounce,ftp-libopie,ftp-proftpd-backdoor,ftp-vsftpd-backdoor,ftp-vuln-cve2010-4221,http-default-accounts {} -oA low_hanging_fruit/low_hanging_fruit_{} && echo '[+]     Completed NMAP Low Hanging Fruit: {}'" >/dev/null 2>&1
+        cat ip_addresses_alive.txt | parallel -j2 "nmap -vv -T4 -F -O -Pn -sV --script=ftp-anon,ftp-bounce,ftp-libopie,ftp-proftpd-backdoor,ftp-vsftpd-backdoor,ftp-vuln-cve2010-4221,http-default-accounts,http-methods,http-auth,http-iis-webdav-vuln,banner-plus --script ssh-hostkey --script-args ssh_hostkey=full {} -oA low_hanging_fruit/low_hanging_fruit_{} && echo '[+]     Completed NMAP Low Hanging Fruit: {}'" >/dev/null 2>&1
     fi
 
     if [ $RUNSMB = "TRUE" ]
@@ -210,27 +225,39 @@ else
         echo "[*] Running SNMP Scans"
         cd ~/assessments/"$CLIENT"/"$TARGET"
         mkdir snmp_scans
-        echo "[+]   Running onesixtyone"
-        onesixtyone -c ~/wordlists/snmp-community-strings.txt -i ip_addresses_alive.txt -o snmp_scans/snmp_strings_found.txt
 
+        echo "[+]   Looking for hosts with port 161 open....."
+        nmap -sU -p 161 $TARGET --open -oA snmp_scans/"$TARGET"_snmp_openports
+        cat snmp_scans/"$TARGET"_snmp_openports.nmap | grep "for" | cut -d" " -f5 | sort -u > snmp_scans/"$TARGET"_snmp_targets.txt
+
+        echo "[+]   Running onesixtyone"
+        onesixtyone -c ~/wordlists/snmp-community-strings.txt -i snmp_scans/"$TARGET"_snmp_targets.txt -o snmp_scans/snmp_strings_found.txt
         cat snmp_scans/snmp_strings_found.txt | sed -e 's/\[//g' | sed -e 's/\]//g' > snmp_scans/snmp_strings_found_clean.txt
+
+        echo "[+]   Creating community & OS files...."
+        for OS in $(cat /usr/share/wordlists/os.txt);do for COMMUNITY in $(grep -i $OS snmp_scans/snmp_strings_found.txt | awk '{print $2}' |sed 's/.\(.*\)./\1/'| sort -u);do grep $COMMUNITY snmp_scans/snmp_strings_found.txt |grep -i $OS | awk '{print $1}' | sort -u >> snmp_scans/$OS.$COMMUNITY.txt; done; done
+
         echo "[+]   Running snmpcheck"
-        while read -r -a array; do (snmpcheck -c ${array[1]} -t ${array[0]} > snmp_scans/${array[0]}_snmpcheck.txt &); done < snmp_scans/snmp_strings_found_clean.txt
-    
+        while read -r -a array; do (snmpcheck -c ${array[1]} -t ${array[0] -T 30} > snmp_scans/${array[0]}_snmpcheck.txt &); done < snmp_scans/snmp_strings_found_clean.txt
+
         sleep 60
     fi
 
     if [ $RUNSMTP = "TRUE"]
     then
         # SMTP
-           echo "[*] Running SMTP enumeration"
-           cd ~/assessments/"$CLIENT"/"$TARGET"
-           mkdir smtp_scans
-        for host in $(cat low_hanging_fruit.gnmap | grep "25/open/tcp//smtp///" | cut -d" " -f2)
-            do
-                    patator smtp_vrfy host=$host user=FILE0 0=/usr/share/wordlists/userlist.txt -x ignore:fgrep='User unknown' -x ignore,reset,retry:code=421 > smtp_scans/"$host"_smtpvrfy.txt
+        echo "[*] Running SMTP enumeration"
+        cd ~/assessments/"$CLIENT"/"$TARGET"
+        mkdir smtp_scans
+        for host in $(grep "open  smtp" low_hanging_fruit/low_hanging_fruit*.nmap | cut -d"/" -f2 | cut -d":" -f1 | sed -e 's/.nmap//g' | sed -e 's/low_hanging_fruit_//g')
+        do
+            # patator smtp_vrfy host=$host user=FILE0 0=/usr/share/wordlists/userlist.txt -x ignore:fgrep='User unknown' -x ignore,reset,retry:code=421 > smtp_scans/"$host"_smtpvrfy.txt
+            echo "[+]   smtp-user-enum $host"
+            smtp-user-enum -M VRFY -U /usr/share/wordlists/userlist.txt -t $host > smtp_scans/"$host"_smtpvrfy.txt
+            echo "[+]   smtp-user-enum (email addresses) $host"
+            smtp-user-enum -M VRFY -D $ZONE -U /usr/share/wordlists/userlist.txt -t $host > smtp_scans/"$host"_smtp_emailaddresses.txt
             sleep 3
-            done
+        done
     fi
 
     if [ $RUNNMAP = "TRUE" ]
@@ -241,26 +268,29 @@ else
 
         # Full TCP & UDP Scan
         echo "[*] Unicornscan to identify open ports..."
-    
         # Loop over IP addresses and pass them to 4 parallel Unicornscan processes
-        cat ip_addresses_alive.txt | parallel -j3 "unicornscan -I -v -mT -R1 -r 350 {} -l unicornscans/{}-tcp.txt && echo '[+]     Completed TCP Host: {}'"
-        cat ip_addresses_alive.txt | parallel -j3 "unicornscan -I -v -mU -R1 -r 350 {} -l unicornscans/{}-udp.txt && echo '[+]     Completed UDP Host: {}'"
+        for host in $(cat ip_addresses_alive.txt)
+        do
+            echo "[+]   Scanning $host"
+            unicornscan -s $SOURCE -Ivv -msf -R1 -r 360 $host:a -l unicornscans/"$host"_tcp.txt
+            unicornscan -s $SOURCE -Ivv -mU -R1 -r 360 $host:a -l unicornscans/"$host"_udp.txt
+        done
 
         for host in $(cat ip_addresses_alive.txt)
         do
-            tcpports=$(cat unicornscans/$host-tcp.txt | grep "from" | cut -d"[" -f2 | cut -d"]" -f1 | sed 's/ //g' | tr '\n' ',')
-            udpports=$(cat unicornscans/$host-udp.txt | grep "from" | cut -d"[" -f2 | cut -d"]" -f1 | sed 's/ //g' | tr '\n' ',')
+            tcpports=$(cat unicornscans/$host_tcp.txt | grep "from" | cut -d"[" -f2 | cut -d"]" -f1 | sed 's/ //g' | tr '\n' ',')
+            udpports=$(cat unicornscans/$host_udp.txt | grep "from" | cut -d"[" -f2 | cut -d"]" -f1 | sed 's/ //g' | tr '\n' ',')
             if [[ ! -z $tcpports ]]
             then
                 echo "[*]     NMAP TCP Scan against ports: $tcpports"
-                nmap -S $SOURCE -vv -sS -n -T4 -A --script=vuln -Pn $host -p $tcpports -oA nmapscans/"$host"_fulltcpscan >/dev/null 2>&1
+                nmap -S $SOURCE -vv -sS -n -T4 -A --script=banner-plus,vuln -Pn $host -p $tcpports -oA nmapscans/"$host"_fulltcpscan >/dev/null 2>&1
             fi
-                    if [[ ! -z $udpports ]]
-                    then
+            if [[ ! -z $udpports ]]
+            then
                 echo "[*]     NMAP Scan against ports: $udpports"
-                        nmap -S $SOURCE -vv -sU -n -T4 -A -Pn $host -p $udpports -oA nmapscans/"$host"_fulltcpscan >/dev/null 2>&1
-                    fi
-            done
+                nmap -S $SOURCE -vv -sU -n -T4 -A -Pn $host -p $udpports -oA nmapscans/"$host"_fulltcpscan >/dev/null 2>&1
+            fi
+        done
     fi
 
     echo -e "$BOLD[*] ALL SCANS COMPLETE !!$ENDC"
